@@ -1,0 +1,14 @@
+{
+    "env": {
+        "node": true,
+        "es2021": true
+    },
+    "extends": "eslint:recommended",
+    "parserOptions": {
+        "ecmaVersion": "latest"
+    },
+    "rules": {
+        "no-undef": "off" // Turn off the 'no-undef' rule globally
+        // Add your other custom rules here
+    }
+}

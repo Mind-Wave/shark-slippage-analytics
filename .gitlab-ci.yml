@@ -1,0 +1,89 @@
+# all jobs except build has been disabled, they would not work from scratch in new environment
+
+variables:
+  RELEASE_NAME: $CI_PROJECT_NAME
+  PROD_NAMESPACE: $PROJECT_NAMESPACE
+
+stages:
+- eslint
+- Build from tag
+# - Deploy
+
+lint:
+  stage: eslint
+  image: node:20-alpine # You can use any Node.js version you prefer
+  tags:
+  - kubernetes
+  script:
+    - npm install --save-dev eslint eslint-formatter-gitlab
+    - npx eslint --format gitlab . -o gl-codequality.json
+  only:
+    - master
+  except:
+    - tags
+  artifacts:
+    reports:
+      codequality: gl-codequality.json
+  allow_failure: true
+
+build_tags:
+  stage: Build from tag
+  tags:
+  - kubernetes
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  only:
+  - tags
+  except:
+  - master
+  script:
+  - /kaniko/executor
+    --dockerfile $CI_PROJECT_DIR/Dockerfile
+    --context $CI_PROJECT_DIR
+    --destination "${CI_REGISTRY_IMAGE}:${CI_COMMIT_TAG}"
+
+
+.deploy:
+  stage: Deploy 
+  tags:
+  - kubernetes
+  image: dtzar/helm-kubectl:3.7.2
+  environment:
+    name: production
+  when:  manual
+  before_script:
+  - mkdir -p ~/.kube
+  - echo ${KUBECONFIG} | base64 -d > ~/.kube/config && chmod 600 $HOME/.kube/config
+  - helm repo add --username ${DOCKER_USER} --password ${DOCKER_PASS} private-helm-reg https://${DOCKER_REGISTRY}/chartrepo/$CI_PROJECT_NAMESPACE
+  - helm repo update
+  script:
+  - helm upgrade
+    --cleanup-on-fail=true
+    -i
+    --timeout=150s
+    --wait
+    --set image.tag=${IMAGE_TAG}
+    --set image.name=slippage-analytics
+    --set-string resources.limits.cpu='1'
+    --set-string resources.limits.memory='1Gi'
+    --set-string resources.requests.cpu='500m'
+    --set-string resources.requests.memory='512Mi'
+    --set-string envs.secrets.DB_CANDLES_USER=${DB_CANDLES_USER}
+    --set-string envs.secrets.DB_CANDLES_PORT=${DB_CANDLES_PORT}
+    --set-string envs.secrets.DB_CANDLES_HOST=${DB_CANDLES_HOST}
+    --set-string envs.secrets.DB_CANDLES_PASSWORD=${DB_CANDLES_PASSWORD}
+    --set-string envs.secrets.DB_USER=${DB_USER}
+    --set-string envs.secrets.DB_PORT=${DB_PORT}
+    --set-string envs.secrets.DB_HOST=${DB_HOST}
+    --set-string envs.secrets.DB_PASSWORD=${DB_PASSWORD}
+    --set-string envs.secrets.DB_PROD_USER=${DB_PROD_USER}
+    --set-string envs.secrets.DB_PROD_PORT=${DB_PROD_PORT}
+    --set-string envs.secrets.DB_PROD_HOST=${DB_PROD_HOST}
+    --set-string envs.secrets.DB_PROD_PASSWORD=${DB_PROD_PASSWORD}
+    --namespace $PROD_NAMESPACE
+    $CI_PROJECT_NAME
+    private-helm-reg/$CI_PROJECT_NAME
+    || (helm rollback ${CI_PROJECT_NAME} --namespace $PROD_NAMESPACE 0 && echo "=> Failed to rollout, rollbacked." && exit 0)
+    || (helm uninstall ${CI_PROJECT_NAME} --namespace $PROD_NAMESPACE && echo "=> Failed to rollout, delete the release." && exit 1)
+
